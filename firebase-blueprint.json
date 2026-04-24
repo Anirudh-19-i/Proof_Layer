@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Candidate or Recruiter profile data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["candidate", "recruiter"] },
+        "skills": { "type": "object", "description": "Map of skillId to skill details" },
+        "consistencyScore": { "type": "number" },
+        "learningVelocity": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Assessment": {
+      "title": "Skill Assessment",
+      "description": "Results of various assessment rounds",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "round": { "type": "integer", "description": "1, 2, or 3" },
+        "type": { "type": "string", "enum": ["micro-task", "case-study", "inquiry"] },
+        "taskId": { "type": "string" },
+        "userInput": { "type": "object", "description": "The submitted response" },
+        "aiEvaluation": { "type": "object", "description": "Score, feedback, and analysis from Gemini" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "round", "type", "status"]
+    },
+    "Job": {
+      "title": "Job Posting",
+      "description": "Job details for matching",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "company": { "type": "string" },
+        "requiredSkills": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Application": {
+      "title": "Job Application",
+      "description": "Tracks a user's progress for a specific job",
+      "type": "object",
+      "properties": {
+        "jobId": { "type": "string" },
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["applied", "round1", "round2", "round3", "offered", "rejected"] },
+        "scores": { "type": "object", "description": "Scores from each round" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "assessments/{assessmentId}": {
+      "schema": "Assessment",
+      "description": "Candidate assessments"
+    },
+    "jobs/{jobId}": {
+      "schema": "Job",
+      "description": "Job listings"
+    },
+    "applications/{applicationId}": {
+      "schema": "Application",
+      "description": "Job applications"
+    }
+  }
+}
