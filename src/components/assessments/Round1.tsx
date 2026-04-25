@@ -7,6 +7,8 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../auth/AuthProvider';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
+import { notificationService } from '../../services/notificationService';
+import SkillRadarChart from '../ui/SkillRadarChart';
 
 interface Round1Props {
   jobId: string;
@@ -61,10 +63,26 @@ export default function Round1({ jobId, onComplete }: Round1Props) {
         const appQuery = query(collection(db, 'applications'), where('userId', '==', user.uid), where('jobId', '==', jobId));
         const appSnap = await getDocs(appQuery);
         if (!appSnap.empty) {
-          await updateDoc(doc(db, 'applications', appSnap.docs[0].id), {
+          const appDoc = appSnap.docs[0];
+          const appData = appDoc.data();
+          await updateDoc(doc(db, 'applications', appDoc.id), {
             status: 'round2',
             updatedAt: new Date().toISOString(),
             [`scores.${1}`]: evaluation.score
+          });
+
+          // Trigger notification
+          const jobSnap = await getDoc(doc(db, 'jobs', jobId));
+          const jobData = jobSnap.data();
+          
+          await notificationService.notifyRecruiter({
+            recruiterId: 'all',
+            type: 'candidate_progress',
+            candidateId: user!.uid,
+            candidateName: profile.displayName,
+            jobId: jobId,
+            jobTitle: jobData?.title || 'Unknown Job',
+            round: 'Round 2'
           });
         }
       }
@@ -92,15 +110,24 @@ export default function Round1({ jobId, onComplete }: Round1Props) {
             <div className="text-6xl font-black text-[#F27D26]">{result.score}</div>
           </div>
 
-          <div className="grid grid-cols-2 gap-8 mb-12">
-            {Object.entries(result.metrics).map(([key, val]: [string, any]) => (
-              <div key={key}>
-                <p className="text-[10px] font-bold uppercase text-gray-400 mb-1">{key}</p>
-                <div className="h-1 bg-gray-100">
-                  <div className="h-full bg-[#141414]" style={{ width: `${val}%` }} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-12 items-center">
+            <div className="bg-gray-50 p-6 shadow-inner border border-gray-100 flex items-center justify-center">
+               <SkillRadarChart />
+            </div>
+            
+            <div className="space-y-6">
+              {Object.entries(result.metrics).map(([key, val]: [string, any]) => (
+                <div key={key}>
+                  <div className="flex justify-between mb-1">
+                    <p className="text-[10px] font-bold uppercase text-gray-400">{key}</p>
+                    <p className="text-[10px] font-bold text-[#141414]">{val}%</p>
+                  </div>
+                  <div className="h-1 bg-gray-100">
+                    <div className="h-full bg-[#141414]" style={{ width: `${val}%` }} />
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
           <div className="prose prose-sm max-w-none mb-12">

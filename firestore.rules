@@ -19,11 +19,18 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isRecruiter() {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'recruiter';
+    }
+
     // --- User Rules ---
     match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId);
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && request.auth.uid == userId;
     }
 
     // --- Panel Session Rules ---
@@ -33,9 +40,10 @@ service cloud.firestore {
 
     // --- Assessment Rules ---
     match /assessments/{assessmentId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isOwner(request.resource.data.userId);
-      allow update: if isSignedIn() && isOwner(resource.data.userId);
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isRecruiter());
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.userId;
+      allow update: if isSignedIn() && request.auth.uid == resource.data.userId;
     }
 
     // --- Job Rules ---
@@ -46,13 +54,26 @@ service cloud.firestore {
 
     // --- Application Rules ---
     match /applications/{applicationId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isOwner(request.resource.data.userId);
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.userId;
       allow update: if isSignedIn();
     }
 
-    function isRecruiter() {
-      return isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'recruiter';
+    // --- Notification Rules ---
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && (resource.data.recruiterId == request.auth.uid || isRecruiter());
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+    }
+
+    // --- Endorsement Rules ---
+    match /endorsements/{endorsementId} {
+      allow get: if true;
+      allow list: if true;
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.endorserId && request.resource.data.endorserId != request.resource.data.recipientId;
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.endorserId;
     }
   }
 }

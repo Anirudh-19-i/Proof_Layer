@@ -15,6 +15,11 @@ import Round2 from '../assessments/Round2';
 import Round3 from '../assessments/Round3';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
+import ScrollReveal from '../ui/ScrollReveal';
+import { Link } from 'react-router-dom';
+import { User } from 'lucide-react';
+import { notificationService } from '../../services/notificationService';
+import SkillRadarChart from '../ui/SkillRadarChart';
 
 export default function CandidateDashboard() {
   const { user, profile, signOut } = useAuth();
@@ -93,6 +98,18 @@ export default function CandidateDashboard() {
         updatedAt: new Date().toISOString()
       };
       const docRef = await addDoc(collection(db, 'applications'), appData);
+      
+      // Trigger notification for recruiters
+      const job = jobs.find(j => j.id === jobId);
+      await notificationService.notifyRecruiter({
+        recruiterId: 'all', // In a real app, notify the job owner
+        type: 'new_application',
+        candidateId: user.uid,
+        candidateName: profile?.displayName || 'Unknown Candidate',
+        jobId: jobId,
+        jobTitle: job?.title || 'Unknown Job'
+      });
+
       toast.success("Application started! Moving to Round 1.");
       setApplications([...applications, { id: docRef.id, ...appData } as any]);
       startAssessment(jobId, 1);
@@ -119,28 +136,41 @@ export default function CandidateDashboard() {
       <aside className="w-64 bg-white border-r border-[#141414]/10 p-6 flex flex-col">
         <div className="flex items-center gap-2 mb-12">
           <Dna className="w-6 h-6 text-[#F27D26]" />
-          <span className="font-bold tracking-tighter uppercase text-lg">ProofLayer</span>
+          <span className="font-bold tracking-tighter uppercase text-lg">AXIOME</span>
         </div>
 
         <nav className="flex-1 space-y-1">
           {[
-            { id: 'overview', icon: BarChart3, label: 'Skill DNA' },
-            { id: 'browse', icon: Briefcase, label: 'Browse Jobs' },
-            { id: 'applications', icon: Target, label: 'Applications' },
-            { id: 'assessments', icon: History, label: 'Verified Proofs' }
+            { id: 'overview', icon: BarChart3, label: 'Skill DNA', link: '/' },
+            { id: 'browse', icon: Briefcase, label: 'Browse Jobs', link: '/' },
+            { id: 'profile', icon: User, label: 'My Profile', link: '/profile' },
+            { id: 'applications', icon: Target, label: 'Applications', link: '/' },
+            { id: 'assessments', icon: History, label: 'Verified Proofs', link: '/' },
+            { id: 'settings', icon: Settings, label: 'Settings', link: '/settings' }
           ].map(item => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id as any)}
-              className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
-                activeTab === item.id 
-                ? 'bg-[#141414] text-white' 
-                : 'text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              <item.icon className="w-4 h-4" />
-              {item.label}
-            </button>
+            item.link === '/' ? (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as any)}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeTab === item.id 
+                  ? 'bg-[#141414] text-white' 
+                  : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                <item.icon className="w-4 h-4" />
+                {item.label}
+              </button>
+            ) : (
+              <Link
+                key={item.id}
+                to={item.link}
+                className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-gray-500 hover:bg-gray-100 transition-colors"
+              >
+                <item.icon className="w-4 h-4" />
+                {item.label}
+              </Link>
+            )
           ))}
         </nav>
 
@@ -199,24 +229,32 @@ export default function CandidateDashboard() {
                     <h3 className="text-lg font-bold uppercase tracking-tight">Skill DNA Breakdown</h3>
                     <Award className="text-[#F27D26]" />
                   </div>
-                  <div className="space-y-4">
-                    {Object.entries(profile?.skills || {}).length > 0 ? (
-                      Object.entries(profile?.skills || {}).map(([name, skill]) => (
-                        <div key={name} className="space-y-2">
-                          <div className="flex justify-between text-sm font-medium">
-                            <span className="uppercase">{name}</span>
-                            <span>{(skill as any).score}%</span>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                    <div className="space-y-4">
+                      {Object.entries(profile?.skills || {}).length > 0 ? (
+                        Object.entries(profile?.skills || {}).map(([name, skill]) => (
+                          <div key={name} className="space-y-2">
+                            <div className="flex justify-between text-sm font-medium">
+                              <span className="uppercase">{name}</span>
+                              <span>{(skill as any).score}%</span>
+                            </div>
+                            <div className="h-2 bg-gray-100">
+                              <div 
+                                className="h-full bg-[#141414]" 
+                                style={{ width: `${(skill as any).score}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className="h-2 bg-gray-100">
-                            <div 
-                              className="h-full bg-[#141414]" 
-                              style={{ width: `${(skill as any).score}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-gray-400 italic">No skill data yet. Complete an assessment to build your DNA.</p>
+                        ))
+                      ) : (
+                        <p className="text-gray-400 italic">No skill data yet. Complete an assessment to build your DNA.</p>
+                      )}
+                    </div>
+                    
+                    {Object.entries(profile?.skills || {}).length > 0 && (
+                      <div className="bg-gray-50 border border-gray-100 p-4 flex items-center justify-center">
+                        <SkillRadarChart />
+                      </div>
                     )}
                   </div>
                 </div>
@@ -377,49 +415,51 @@ export default function CandidateDashboard() {
                    </div>
                 ) : assessments.length > 0 ? (
                   assessments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map(acc => (
-                    <div key={acc.id} className="bg-white border border-[#141414]/10 p-8 space-y-8 hover:shadow-lg transition-all group">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div className="flex items-center gap-3 mb-2">
-                             <span className="px-2 py-0.5 bg-[#141414] text-white text-[8px] font-bold uppercase tracking-widest">Round {acc.round}</span>
-                             <span className="text-[10px] font-black uppercase tracking-tight text-[#F27D26]">{acc.type}</span>
+                    <ScrollReveal key={acc.id} baseOpacity={0} baseRotation={2}>
+                      <div className="bg-white border border-[#141414]/10 p-8 space-y-8 hover:shadow-lg transition-all group">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="flex items-center gap-3 mb-2">
+                               <span className="px-2 py-0.5 bg-[#141414] text-white text-[8px] font-bold uppercase tracking-widest">Round {acc.round}</span>
+                               <span className="text-[10px] font-black uppercase tracking-tight text-[#F27D26]">{acc.type}</span>
+                            </div>
+                            <h4 className="font-bold text-2xl uppercase tracking-tighter">{acc.taskId.split('-').join(' ')}</h4>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(acc.createdAt).toLocaleDateString()} at {new Date(acc.createdAt).toLocaleTimeString()}</p>
                           </div>
-                          <h4 className="font-bold text-2xl uppercase tracking-tighter">{acc.taskId.split('-').join(' ')}</h4>
-                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(acc.createdAt).toLocaleDateString()} at {new Date(acc.createdAt).toLocaleTimeString()}</p>
+                          <div className="text-right">
+                             <div className="text-5xl font-black tracking-tighter text-[#141414]">{acc.aiEvaluation?.score || 0}</div>
+                             <div className="text-[8px] font-bold uppercase text-gray-400 tracking-widest">AI Result</div>
+                          </div>
                         </div>
-                        <div className="text-right">
-                           <div className="text-5xl font-black tracking-tighter text-[#141414]">{acc.aiEvaluation?.score || 0}</div>
-                           <div className="text-[8px] font-bold uppercase text-gray-400 tracking-widest">AI Result</div>
-                        </div>
-                      </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-8 border-t border-gray-100">
-                        <div className="space-y-4">
-                           <div className="flex items-center gap-2">
-                              <Target className="w-3 h-3 text-[#141414]" />
-                              <h5 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Your Attempt</h5>
-                           </div>
-                           <div className="bg-gray-50 p-6 text-sm font-medium text-gray-600 border border-gray-100 max-h-48 overflow-y-auto scrollbar-thin">
-                              {acc.type === 'inquiry' ? (
-                                <ul className="list-disc pl-4 space-y-2">
-                                   {(acc.userInput.questions || []).map((q: string, i: number) => <li key={i}>{q}</li>)}
-                                </ul>
-                              ) : (
-                                <p className="whitespace-pre-wrap">{acc.userInput.response || JSON.stringify(acc.userInput)}</p>
-                              )}
-                           </div>
-                        </div>
-                        <div className="space-y-4">
-                           <div className="flex items-center gap-2">
-                              <BrainCircuit className="w-3 h-3 text-[#F27D26]" />
-                              <h5 className="text-[10px] font-bold uppercase tracking-widest text-[#F27D26]">AI Proof Feedback</h5>
-                           </div>
-                           <div className="prose prose-sm max-w-none text-sm font-medium text-gray-600 bg-white border border-gray-100 p-6 max-h-48 overflow-y-auto scrollbar-thin shadow-inner">
-                              <ReactMarkdown>{acc.aiEvaluation?.feedback || acc.aiEvaluation?.analysis || 'Analysis complete. Verified.'}</ReactMarkdown>
-                           </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-8 border-t border-gray-100">
+                          <div className="space-y-4">
+                             <div className="flex items-center gap-2">
+                                <Target className="w-3 h-3 text-[#141414]" />
+                                <h5 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Your Attempt</h5>
+                             </div>
+                             <div className="bg-gray-50 p-6 text-sm font-medium text-gray-600 border border-gray-100 max-h-48 overflow-y-auto scrollbar-thin">
+                                {acc.type === 'inquiry' ? (
+                                  <ul className="list-disc pl-4 space-y-2">
+                                     {(acc.userInput.questions || []).map((q: string, i: number) => <li key={i}>{q}</li>)}
+                                  </ul>
+                                ) : (
+                                  <p className="whitespace-pre-wrap">{acc.userInput.response || JSON.stringify(acc.userInput)}</p>
+                                )}
+                             </div>
+                          </div>
+                          <div className="space-y-4">
+                             <div className="flex items-center gap-2">
+                                <BrainCircuit className="w-3 h-3 text-[#F27D26]" />
+                                <h5 className="text-[10px] font-bold uppercase tracking-widest text-[#F27D26]">AI Proof Feedback</h5>
+                             </div>
+                             <div className="prose prose-sm max-w-none text-sm font-medium text-gray-600 bg-white border border-gray-100 p-6 max-h-48 overflow-y-auto scrollbar-thin shadow-inner">
+                                <ReactMarkdown>{acc.aiEvaluation?.feedback || acc.aiEvaluation?.analysis || 'Analysis complete. Verified.'}</ReactMarkdown>
+                             </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    </ScrollReveal>
                   ))
                 ) : (
                   <div className="bg-white border border-[#141414]/10 p-20 text-center space-y-6">

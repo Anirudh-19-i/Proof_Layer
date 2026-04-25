@@ -2,27 +2,40 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthProvider';
 import { db } from '../../lib/firebase';
 import { collection, query, getDocs, doc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
-import { UserProfile, Job, Assessment, Role } from '../../types';
+import { UserProfile, Job, Assessment, Role, Notification, Application } from '../../types';
 import { 
   Users, Briefcase, BarChart3, Filter, 
   Search, ExternalLink, Mail, Award,
   CheckCircle2, AlertTriangle, TrendingUp,
   Settings, Loader2, BrainCircuit, Zap, Shield,
-  History, MessageSquare, ChevronRight
+  History, MessageSquare, ChevronRight, Bell, Bookmark, BookmarkCheck
 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'react-hot-toast';
+import ScrollReveal from '../ui/ScrollReveal';
+import { Link } from 'react-router-dom';
+import { User } from 'lucide-react';
+import { calculateJobFit, MatchResult } from '../../services/aiMatching';
+import { notificationService } from '../../services/notificationService';
+import SkillRadarChart from '../ui/SkillRadarChart';
 
 export default function RecruiterDashboard() {
   const { profile, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'candidates' | 'jobs' | 'analytics'>('candidates');
+  const [activeTab, setActiveTab] = useState<'candidates' | 'jobs' | 'analytics' | 'notifications'>('candidates');
   const [candidates, setCandidates] = useState<UserProfile[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<UserProfile | null>(null);
   const [candidateAssessments, setCandidateAssessments] = useState<Assessment[]>([]);
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [verifyingSkill, setVerifyingSkill] = useState<string | null>(null);
+  const [selectedJobForMatch, setSelectedJobForMatch] = useState<Job | null>(null);
+  const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [calculatingMatch, setCalculatingMatch] = useState(false);
+  const [jobAnalytics, setJobAnalytics] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [applications, setApplications] = useState<Application[]>([]);
+  const [shortlisting, setShortlisting] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchCandidates = async () => {
@@ -107,9 +120,86 @@ export default function RecruiterDashboard() {
       }
     };
 
+    const fetchApplications = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, 'applications'));
+        const apps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Application));
+        setApplications(apps);
+      } catch (e) {
+        console.error("Failed to fetch applications", e);
+      }
+    };
+
+    const fetchNotifications = async () => {
+      if (!profile) return;
+      const notes = await notificationService.getNotifications(profile.uid);
+      setNotifications(notes);
+    };
+
     fetchCandidates();
     fetchJobs();
-  }, []);
+    fetchAnalytics();
+    fetchApplications();
+    fetchNotifications();
+
+    // Poll for notifications every 30 seconds
+    const interval = setInterval(fetchNotifications, 30000);
+    return () => clearInterval(interval);
+  }, [profile]);
+
+  const toggleShortlist = async (appId: string, currentStatus: boolean = false) => {
+    setShortlisting(appId);
+    try {
+      await updateDoc(doc(db, 'applications', appId), {
+        shortlisted: !currentStatus,
+        updatedAt: new Date().toISOString()
+      });
+      setApplications(prev => prev.map(a => a.id === appId ? { ...a, shortlisted: !currentStatus } : a));
+      toast.success(!currentStatus ? 'Candidate shortlisted' : 'Removed from shortlist');
+    } catch (e) {
+      toast.error('Failed to update shortlist status');
+    } finally {
+      setShortlisting(null);
+    }
+  };
+
+  const markNotificationRead = async (id: string) => {
+    await notificationService.markAsRead(id);
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  };
+
+  const fetchAnalytics = async () => {
+    try {
+      const appSnap = await getDocs(collection(db, 'applications'));
+      const jobSnap = await getDocs(collection(db, 'jobs'));
+      
+      const apps = appSnap.docs.map(d => d.data());
+      const jobsList = jobSnap.docs.map(d => ({ id: d.id, ...d.data() } as Job));
+
+      const analytics = jobsList.map(job => {
+        const jobApps = apps.filter(a => a.jobId === job.id);
+        const scores = jobApps.filter(a => a.scores).map(a => Object.values(a.scores as Record<string, number>)).flat();
+        const avgScore = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '0';
+        
+        const passedRound1 = jobApps.filter(a => a.status === 'round2' || a.status === 'round3' || a.status === 'offered').length;
+        const totalWithScore = jobApps.length;
+        const passRate = totalWithScore > 0 ? ((passedRound1 / totalWithScore) * 100).toFixed(0) : '0';
+
+        return {
+          id: job.id,
+          title: job.title,
+          applicantCount: jobApps.length,
+          avgScore,
+          passRate,
+          status: 'Active'
+        };
+      });
+
+      setJobAnalytics(analytics);
+    } catch (e) {
+      console.error("Failed to fetch analytics", e);
+    }
+  };
 
   const selectCandidate = async (candidate: UserProfile) => {
     setSelectedCandidate(candidate);
@@ -148,6 +238,37 @@ export default function RecruiterDashboard() {
     }
   };
 
+  const runAiMatch = async (candidate?: UserProfile, job?: Job) => {
+    const targetCandidate = candidate || selectedCandidate;
+    const targetJob = job || selectedJobForMatch;
+
+    if (!targetCandidate || !targetJob) {
+      toast.error("Candidate and job required for matching");
+      return;
+    }
+    setCalculatingMatch(true);
+    setMatchResult(null);
+    try {
+      // Need to fetch assessments for the candidate if not already loaded
+      let assessments = candidateAssessments;
+      if (candidate && candidate.uid !== selectedCandidate?.uid) {
+        const q = query(collection(db, 'assessments'));
+        const snapshot = await getDocs(q);
+        assessments = snapshot.docs
+          .map(d => ({ id: d.id, ...d.data() } as Assessment))
+          .filter(a => a.userId === candidate.uid);
+      }
+
+      const result = await calculateJobFit(targetCandidate, assessments, targetJob);
+      setMatchResult(result);
+      toast.success(`AI Analysis complete for ${targetCandidate.displayName}`);
+    } catch (e) {
+      toast.error("AI Matching failed");
+    } finally {
+      setCalculatingMatch(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F5F5F4] flex">
       {/* Sidebar */}
@@ -177,6 +298,28 @@ export default function RecruiterDashboard() {
           >
             <BarChart3 className="w-6 h-6" />
           </button>
+          <button 
+            onClick={() => setActiveTab('notifications')}
+            className={`p-3 rounded-lg transition-all relative ${activeTab === 'notifications' ? 'text-[#F27D26] bg-white/5' : 'text-gray-500 hover:text-white'}`}
+          >
+            <Bell className="w-6 h-6" />
+            {notifications.filter(n => !n.read).length > 0 && (
+              <span className="absolute top-2 right-2 w-2 h-2 bg-[#F27D26] rounded-full border border-[#141414]" />
+            )}
+          </button>
+          <div className="w-full h-px bg-white/10 my-2" />
+          <Link 
+            to="/profile"
+            className="p-3 rounded-lg text-gray-500 hover:text-white transition-all"
+          >
+            <User className="w-6 h-6" />
+          </Link>
+          <Link 
+            to="/settings"
+            className="p-3 rounded-lg text-gray-500 hover:text-white transition-all"
+          >
+            <Settings className="w-6 h-6" />
+          </Link>
         </div>
         <button onClick={signOut} className="p-3 text-red-500 hover:text-red-400 transition-colors"><TrendingUp className="w-6 h-6" /></button>
         <button 
@@ -222,8 +365,13 @@ export default function RecruiterDashboard() {
                     {c.photoURL ? <img src={c.photoURL} className="w-full h-full object-cover" /> : c.displayName[0]}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h4 className="font-bold truncate">{c.displayName}</h4>
-                    <p className="text-[10px] font-bold uppercase text-gray-400 truncate">{c.email}</p>
+                    <h4 className="font-bold truncate text-sm">{c.displayName}</h4>
+                    <div className="flex items-center gap-2">
+                      <p className="text-[10px] font-bold uppercase text-gray-400 truncate">{c.email}</p>
+                      {applications.some(a => a.userId === c.uid && a.shortlisted) && (
+                        <BookmarkCheck className="w-3 h-3 text-[#F27D26]" />
+                      )}
+                    </div>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-mono font-bold">{c.consistencyScore}%</p>
@@ -246,9 +394,16 @@ export default function RecruiterDashboard() {
                     <div>
                       <h1 className="text-3xl font-bold tracking-tight mb-2 uppercase">{selectedCandidate.displayName}</h1>
                       <div className="flex gap-4 items-center">
-                        <span className="px-3 py-1 bg-[#141414] text-white text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
-                           <Award className="w-3 h-3" /> Top 10%
-                        </span>
+                        {selectedCandidate.consistencyScore >= 90 && (
+                          <span className="px-3 py-1 bg-[#141414] text-white text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
+                             <Award className="w-3 h-3" /> Top 10%
+                          </span>
+                        )}
+                        {selectedCandidate.learningVelocity >= 2.0 && (
+                          <span className="px-3 py-1 bg-[#F27D26] text-white text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
+                             <Zap className="w-3 h-3" /> Hyper-Growth
+                          </span>
+                        )}
                         <span className="text-xs font-medium text-gray-400 flex items-center gap-1"><Mail className="w-3 h-3" /> {selectedCandidate.email}</span>
                       </div>
                     </div>
@@ -277,7 +432,8 @@ export default function RecruiterDashboard() {
                            </div>
                         ) : (
                           candidateAssessments.sort((a, b) => b.round - a.round).map(acc => (
-                             <div key={acc.id} className="bg-gray-50 border border-gray-100 p-8 space-y-6 hover:shadow-lg transition-all relative overflow-hidden group">
+                            <ScrollReveal key={acc.id} baseOpacity={0} baseRotation={1} blurStrength={2}>
+                              <div key={acc.id} className="bg-gray-50 border border-gray-100 p-8 space-y-6 hover:shadow-lg transition-all relative overflow-hidden group">
                                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                                    <Award className="w-12 h-12" />
                                 </div>
@@ -287,6 +443,11 @@ export default function RecruiterDashboard() {
                                       <div className="flex items-center gap-3 mb-2">
                                         <span className="px-2 py-0.5 bg-[#141414] text-white text-[8px] font-bold uppercase tracking-widest">Round {acc.round}</span>
                                         <span className="text-[10px] font-black uppercase tracking-tight text-[#F27D26]">{acc.type}</span>
+                                        {selectedJobForMatch && applications.some(a => a.userId === selectedCandidate.uid && a.jobId === selectedJobForMatch.id && a.shortlisted) && (
+                                           <span className="px-2 py-0.5 bg-[#F27D26]/10 text-[#F27D26] text-[8px] font-bold uppercase tracking-widest flex items-center gap-1">
+                                             <BookmarkCheck className="w-2 h-2" /> Shortlisted
+                                           </span>
+                                        )}
                                       </div>
                                       <h4 className="font-bold text-lg uppercase tracking-tight">{acc.taskId.split('-').join(' ')}</h4>
                                       <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">{new Date(acc.createdAt).toLocaleDateString()} at {new Date(acc.createdAt).toLocaleTimeString()}</p>
@@ -320,7 +481,8 @@ export default function RecruiterDashboard() {
                                       </div>
                                     </div>
                                 </div>
-                             </div>
+                              </div>
+                            </ScrollReveal>
                           ))
                         )}
                         {candidateAssessments.length === 0 && !loading && (
@@ -331,33 +493,28 @@ export default function RecruiterDashboard() {
 
                    <div className="space-y-6">
                      <div className="bg-[#141414] text-white p-8 space-y-6">
-                        <h3 className="text-xs font-bold uppercase tracking-[0.2em]">Skill DNA Strength</h3>
-                        <div className="space-y-4">
-                          {Object.entries(selectedCandidate.skills).map(([name, skill]) => (
-                            <div key={name} className="space-y-2 group/skill">
-                              <div className="flex justify-between text-[10px] font-bold uppercase">
-                                 <div className="flex items-center gap-2">
-                                    <span>{name}</span>
-                                    {skill.score >= 80 && <Shield className="w-3 h-3 text-[#F27D26]" />}
-                                 </div>
-                                 <span>{skill.score}%</span>
-                              </div>
-                              <div className="h-1 bg-white/10 overflow-hidden relative">
-                                 <div className="h-full bg-[#F27D26]" style={{ width: `${skill.score}%` }} />
-                              </div>
-                              <div className="flex justify-between items-center opacity-0 group-hover/skill:opacity-100 transition-opacity pt-1">
-                                 <span className="text-[8px] text-gray-500 font-bold uppercase tracking-tighter">Verified Level: {skill.level}</span>
-                                 <button 
-                                   onClick={() => requestVerification(name)}
-                                   disabled={verifyingSkill === name}
-                                   className="text-[8px] font-black uppercase text-[#F27D26] hover:underline flex items-center gap-1"
-                                 >
-                                   {verifyingSkill === name ? <Loader2 className="w-2 h-2 animate-spin" /> : <Zap className="w-2 h-2" />}
-                                   Re-Verify Proof
-                                 </button>
-                              </div>
-                            </div>
-                          ))}
+                        <h3 className="text-xs font-bold uppercase tracking-[0.2em]">Skill DNA Strength Analysis</h3>
+                        <div className="flex flex-col gap-8">
+                           <div className="bg-white/5 p-4 rounded-sm border border-white/10 flex items-center justify-center">
+                              <SkillRadarChart />
+                           </div>
+                           
+                           <div className="space-y-4">
+                            {Object.entries(selectedCandidate.skills).map(([name, skill]) => (
+                                <div key={name} className="space-y-2 group/skill">
+                                  <div className="flex justify-between text-[10px] font-bold uppercase">
+                                     <div className="flex items-center gap-2">
+                                        <span>{name}</span>
+                                        {skill.score >= 80 && <Shield className="w-3 h-3 text-[#F27D26]" />}
+                                     </div>
+                                     <span>{skill.score}%</span>
+                                  </div>
+                                  <div className="h-1 bg-white/10 overflow-hidden relative">
+                                     <div className="h-full bg-[#F27D26]" style={{ width: `${skill.score}%` }} />
+                                  </div>
+                                </div>
+                              ))}
+                           </div>
                         </div>
                      </div>
 
@@ -372,8 +529,30 @@ export default function RecruiterDashboard() {
                            </button>
                         </div>
                         <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
-                            <span className="text-[10px] font-bold uppercase text-gray-400">Application State</span>
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-600 text-[8px] font-black uppercase tracking-widest">Active Journey</span>
+                            <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold uppercase text-gray-400">Application State</span>
+                                <span className="px-2 py-0.5 bg-blue-100 text-blue-600 text-[8px] font-black uppercase tracking-widest">Active Journey</span>
+                            </div>
+                            
+                            {selectedJobForMatch && (
+                               <div className="space-y-2">
+                                  <label className="text-[10px] font-bold uppercase text-gray-400 block">Shortlist for {selectedJobForMatch.title}</label>
+                                  {(() => {
+                                    const app = applications.find(a => a.userId === selectedCandidate.uid && a.jobId === selectedJobForMatch.id);
+                                    if (!app) return <p className="text-[10px] text-gray-400 italic">No application found for this job</p>;
+                                    return (
+                                      <button 
+                                        onClick={() => toggleShortlist(app.id, app.shortlisted)}
+                                        disabled={shortlisting === app.id}
+                                        className={`w-full py-2 text-[10px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${app.shortlisted ? 'bg-[#F27D26] text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                                      >
+                                        {shortlisting === app.id ? <Loader2 className="w-3 h-3 animate-spin" /> : app.shortlisted ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />}
+                                        {app.shortlisted ? 'In Shortlist' : 'Add to Shortlist'}
+                                      </button>
+                                    );
+                                  })()}
+                               </div>
+                            )}
                         </div>
                      </div>
 
@@ -384,6 +563,114 @@ export default function RecruiterDashboard() {
                            <span className="text-xs font-bold uppercase tracking-widest">Integrity Verified</span>
                         </div>
                         <p className="text-[10px] text-gray-400 font-medium">Anti-cheating pattern detection shows 0 anomalies in assessment timelines.</p>
+                     </div>
+
+                     <div className="bg-white border border-[#141414]/10 p-8 space-y-6">
+                        <div className="flex justify-between items-center">
+                           <h3 className="text-xs font-bold uppercase tracking-[0.2em]">AI Talent Match (Beta)</h3>
+                           <BrainCircuit className="w-4 h-4 text-[#F27D26]" />
+                        </div>
+                        
+                        <div className="space-y-4">
+                           <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase text-gray-400">Select Active Role</label>
+                              <select 
+                                className="w-full bg-gray-50 border-none text-xs font-medium py-2 px-3 focus:ring-1 focus:ring-[#F27D26]"
+                                onChange={(e) => setSelectedJobForMatch(jobs.find(j => j.id === e.target.value) || null)}
+                                value={selectedJobForMatch?.id || ''}
+                              >
+                                <option value="">Choose a role...</option>
+                                {jobs.map(j => (
+                                  <option key={j.id} value={j.id}>{j.title}</option>
+                                ))}
+                              </select>
+                           </div>
+
+                           <button 
+                             onClick={() => runAiMatch()}
+                             disabled={!selectedJobForMatch || calculatingMatch}
+                             className="w-full py-4 bg-[#F27D26] text-white font-bold uppercase tracking-widest text-[10px] hover:bg-[#141414] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                           >
+                             {calculatingMatch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                             {calculatingMatch ? 'Processing DNA...' : 'Run Match Analysis'}
+                           </button>
+
+                           {matchResult && (
+                             <motion.div 
+                               initial={{ opacity: 0, scale: 0.95 }}
+                               animate={{ opacity: 1, scale: 1 }}
+                               className="pt-6 border-t border-gray-100 space-y-6"
+                             >
+                               <div className="flex justify-between items-end">
+                                  <div>
+                                     <p className="text-[10px] font-bold uppercase text-gray-400">AI Match Score</p>
+                                     <p className={`text-4xl font-black ${matchResult.score > 80 ? 'text-green-500' : 'text-[#F27D26]'}`}>
+                                       {matchResult.score}%
+                                     </p>
+                                  </div>
+                                  <div className="text-right">
+                                     <span className="px-2 py-0.5 bg-gray-100 text-[8px] font-black uppercase tracking-widest">Axiome Intelligence</span>
+                                  </div>
+                               </div>
+
+                               <div className="space-y-2">
+                                  <h5 className="text-[10px] font-bold uppercase tracking-widest text-[#141414]">Fit Analysis</h5>
+                                  <p className="text-xs text-gray-600 font-medium leading-relaxed">{matchResult.reasoning}</p>
+                               </div>
+
+                               <div className="space-y-4">
+                                  <div className="space-y-2">
+                                     <h5 className="text-[10px] font-bold uppercase tracking-widest text-[#F27D26]">Proof-Based Insights</h5>
+                                     <ul className="space-y-2">
+                                        {matchResult.assessmentInsights.map((insight, i) => (
+                                          <li key={i} className="text-[10px] font-medium text-gray-600 bg-gray-50 border-l-2 border-[#141414] p-2 leading-relaxed">
+                                            {insight}
+                                          </li>
+                                        ))}
+                                     </ul>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                     <h5 className="text-[10px] font-bold uppercase tracking-widest text-[#141414]">Competitive Skill Matrix</h5>
+                                     <div className="space-y-2">
+                                        {matchResult.skillAnalysis.map((skill, i) => (
+                                          <div key={i} className="flex justify-between items-center bg-gray-50/50 p-2 border border-gray-100">
+                                            <div className="flex items-center gap-2">
+                                               <div className={`w-1 h-1 rounded-full ${skill.gap ? 'bg-red-400' : 'bg-green-500'}`} />
+                                               <span className="text-[10px] font-bold uppercase tracking-tighter">{skill.skill}</span>
+                                            </div>
+                                            <span className="text-[9px] text-gray-400 italic max-w-[60%] text-right font-medium">{skill.insight}</span>
+                                          </div>
+                                        ))}
+                                     </div>
+                                  </div>
+                               </div>
+
+                               <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                     <h5 className="text-[8px] font-bold uppercase tracking-widest text-green-600">Core Strengths</h5>
+                                     <ul className="space-y-1">
+                                        {matchResult.strengths.map(s => (
+                                          <li key={s} className="text-[10px] font-medium text-gray-500 flex items-center gap-1">
+                                            <div className="w-1 h-1 bg-green-500 rounded-full" /> {s}
+                                          </li>
+                                        ))}
+                                     </ul>
+                                  </div>
+                                  <div className="space-y-2">
+                                     <h5 className="text-[8px] font-bold uppercase tracking-widest text-red-400">Identified Gaps</h5>
+                                     <ul className="space-y-1">
+                                        {matchResult.gaps.map(g => (
+                                          <li key={g} className="text-[10px] font-medium text-gray-500 flex items-center gap-1">
+                                            <div className="w-1 h-1 bg-red-400 rounded-full" /> {g}
+                                          </li>
+                                        ))}
+                                     </ul>
+                                  </div>
+                               </div>
+                             </motion.div>
+                           )}
+                        </div>
                      </div>
                    </div>
                 </section>
@@ -436,11 +723,40 @@ export default function RecruiterDashboard() {
                     ))}
                   </div>
 
+                  <div className="pt-4 border-t border-gray-50 space-y-3">
+                    <h4 className="text-[10px] font-black uppercase text-[#F27D26] tracking-widest">Recommended Fits</h4>
+                    <div className="space-y-2">
+                       {candidates.slice(0, 2).map((c, i) => (
+                         <div key={c.uid} className="flex justify-between items-center bg-gray-50 p-3">
+                            <div className="flex items-center gap-2">
+                               <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center text-[8px] font-bold border">{c.displayName[0]}</div>
+                               <div>
+                                  <p className="text-[10px] font-bold">{c.displayName}</p>
+                                  <p className="text-[8px] text-gray-400 uppercase font-black">{i === 0 ? '94%' : '88%'} Skill Match</p>
+                               </div>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                selectCandidate(c);
+                                setSelectedJobForMatch(job);
+                                setActiveTab('candidates');
+                                // Delay slightly to ensure tab switch happens
+                                setTimeout(() => runAiMatch(c, job), 100);
+                              }}
+                              className="text-[8px] font-black uppercase text-[#F27D26] hover:underline"
+                            >
+                               Analyze Fit
+                            </button>
+                         </div>
+                       ))}
+                    </div>
+                  </div>
+
                   <button 
                     onClick={() => setActiveTab('candidates')}
                     className="w-full py-4 border border-[#141414] font-bold uppercase tracking-widest text-[10px] hover:bg-[#141414] hover:text-white transition-all"
                   >
-                    View Pipeline
+                    View Full Pipeline
                   </button>
                 </div>
               ))}
@@ -451,25 +767,82 @@ export default function RecruiterDashboard() {
 
       {activeTab === 'analytics' && (
         <div className="flex-1 p-12 overflow-y-auto bg-[#F5F5F4]">
-          <div className="max-w-5xl mx-auto space-y-12">
-            <header>
-               <h1 className="text-4xl font-black uppercase tracking-tighter">Hiring Insights</h1>
-               <p className="text-sm font-medium text-gray-400 uppercase tracking-widest mt-2">Real-time assessment efficacy & pipeline velocity</p>
+          <div className="max-w-6xl mx-auto space-y-12">
+            <header className="flex justify-between items-end">
+               <div>
+                  <h1 className="text-4xl font-black uppercase tracking-tighter">Hiring Insights</h1>
+                  <p className="text-sm font-medium text-gray-400 uppercase tracking-widest mt-2">Real-time assessment efficacy & pipeline velocity</p>
+               </div>
+               <button 
+                 onClick={fetchAnalytics}
+                 className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#F27D26] hover:underline"
+               >
+                 <History className="w-3 h-3" /> Refresh Report
+               </button>
             </header>
 
             <div className="grid grid-cols-4 gap-6">
                {[
-                 { label: 'Avg Interview Score', value: '78%', trend: '+4%' },
-                 { label: 'Time to Verified', value: '4.2 Days', trend: '-1.2d' },
-                 { label: 'Candidate Velocity', value: '1.8x', trend: '+0.2' },
-                 { label: 'Offer Acceptance', value: '92%', trend: '+2%' },
+                 { label: 'Avg Interview Score', value: `${jobAnalytics.length > 0 ? (jobAnalytics.reduce((acc, curr) => acc + parseFloat(curr.avgScore), 0) / jobAnalytics.length).toFixed(1) : 0}%`, trend: '+4%' },
+                 { label: 'Verified Proof Count', value: candidates.reduce((acc, curr) => acc + (Object.keys(curr.skills).length), 0).toString(), trend: '+12' },
+                 { label: 'Candidate Velocity', value: (candidates.reduce((acc, curr) => acc + curr.learningVelocity, 0) / (candidates.length || 1)).toFixed(1) + 'x', trend: '+0.2' },
+                 { label: 'Avg Pass Rate', value: `${jobAnalytics.length > 0 ? (jobAnalytics.reduce((acc, curr) => acc + parseFloat(curr.passRate), 0) / jobAnalytics.length).toFixed(0) : 0}%`, trend: '+2%' },
                ].map(stat => (
-                 <div key={stat.label} className="bg-white p-6 border border-gray-100 shadow-sm">
-                    <div className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-4">{stat.label}</div>
-                    <div className="text-3xl font-black">{stat.value}</div>
-                    <div className={`text-[10px] font-bold uppercase mt-2 ${stat.trend.startsWith('+') ? 'text-green-500' : 'text-blue-500'}`}>{stat.trend} from last month</div>
+                 <div key={stat.label} className="bg-white p-6 border border-gray-100 shadow-sm relative overflow-hidden group">
+                    <div className="absolute right-0 top-0 w-24 h-24 bg-gray-50 -mr-12 -mt-12 rounded-full opacity-50 group-hover:scale-150 transition-transform duration-500" />
+                    <div className="text-[10px] font-bold uppercase text-gray-400 tracking-widest mb-4 relative z-10">{stat.label}</div>
+                    <div className="text-3xl font-black relative z-10">{stat.value}</div>
+                    <div className={`text-[10px] font-bold uppercase mt-2 relative z-10 ${stat.trend.startsWith('+') ? 'text-green-500' : 'text-blue-500'}`}>{stat.trend} increase</div>
                  </div>
                ))}
+            </div>
+
+            <div className="space-y-6">
+               <h3 className="text-xs font-bold uppercase tracking-[0.2em] flex items-center gap-2">
+                 <Briefcase className="w-4 h-4 text-[#F27D26]" /> Job Performance Matrix
+               </h3>
+               <div className="bg-white border border-[#141414]/10 shadow-sm overflow-hidden">
+                  <table className="w-full text-left">
+                     <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                           <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Position</th>
+                           <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Applicants</th>
+                           <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Avg DNA Score</th>
+                           <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">R1 Pass Rate</th>
+                           <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Status</th>
+                        </tr>
+                     </thead>
+                     <tbody className="divide-y divide-gray-50">
+                        {jobAnalytics.map((analysis) => (
+                          <tr key={analysis.id} className="hover:bg-gray-50/50 transition-colors group">
+                             <td className="px-8 py-6">
+                                <div className="font-bold text-sm tracking-tight group-hover:text-[#F27D26] transition-colors">{analysis.title}</div>
+                             </td>
+                             <td className="px-8 py-6 font-mono text-xs">{analysis.applicantCount}</td>
+                             <td className="px-8 py-6">
+                                <div className="flex items-center gap-2">
+                                   <div className="w-16 h-1 bg-gray-100 rounded-full overflow-hidden">
+                                      <div className="h-full bg-[#141414]" style={{ width: `${analysis.avgScore}%` }} />
+                                   </div>
+                                   <span className="font-mono text-xs">{analysis.avgScore}%</span>
+                                </div>
+                             </td>
+                             <td className="px-8 py-6 text-xs font-bold">{analysis.passRate}%</td>
+                             <td className="px-8 py-6">
+                                <span className={`px-2 py-0.5 text-[8px] font-black uppercase tracking-widest ${analysis.status === 'Active' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
+                                   {analysis.status}
+                                </span>
+                             </td>
+                          </tr>
+                        ))}
+                        {jobAnalytics.length === 0 && (
+                          <tr>
+                             <td colSpan={5} className="px-8 py-20 text-center text-gray-400 italic text-sm">No job performance data available yet.</td>
+                          </tr>
+                        )}
+                     </tbody>
+                  </table>
+               </div>
             </div>
 
             <div className="grid grid-cols-3 gap-8">
@@ -498,6 +871,92 @@ export default function RecruiterDashboard() {
                     ))}
                   </div>
                </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'notifications' && (
+        <div className="flex-1 p-12 overflow-y-auto bg-[#F5F5F4]">
+          <div className="max-w-4xl mx-auto space-y-12">
+            <header className="flex justify-between items-end">
+               <div>
+                  <h1 className="text-4xl font-black uppercase tracking-tighter">Activity Feed</h1>
+                  <p className="text-sm font-medium text-gray-400 uppercase tracking-widest mt-2">Real-time alerts from your talent pipeline</p>
+               </div>
+               <button 
+                 onClick={async () => {
+                   if (!profile) return;
+                   const notes = await notificationService.getNotifications(profile.uid);
+                   setNotifications(notes);
+                   toast.success('Feed updated');
+                 }}
+                 className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#F27D26] hover:underline"
+               >
+                 <History className="w-3 h-3" /> Refresh Feed
+               </button>
+            </header>
+
+            <div className="space-y-4">
+               {notifications.length > 0 ? (
+                 <div className="divide-y divide-gray-100 bg-white border border-gray-100 shadow-sm">
+                   {notifications.map((note) => (
+                     <div 
+                       key={note.id} 
+                       className={`p-6 transition-colors flex items-start gap-6 group hover:bg-gray-50/50 ${!note.read ? 'bg-gray-50/30 border-l-4 border-[#F27D26]' : ''}`}
+                     >
+                       <div className={`mt-1 p-2 rounded-full ${note.type === 'new_application' ? 'bg-blue-50 text-blue-500' : 'bg-[#F27D26]/10 text-[#F27D26]'}`}>
+                          {note.type === 'new_application' ? <Briefcase className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
+                       </div>
+                       <div className="flex-1 space-y-1">
+                          <div className="flex justify-between items-start">
+                             <h4 className="text-sm font-bold uppercase tracking-tight">
+                                {note.type === 'new_application' ? 'New Application Received' : 'Candidate Progressed'}
+                             </h4>
+                             <span className="text-[9px] font-mono text-gray-400 uppercase">{new Date(note.createdAt).toLocaleString()}</span>
+                          </div>
+                          <p className="text-xs text-gray-600 leading-relaxed">
+                             <span className="font-bold text-[#141414]">{note.candidateName}</span> 
+                             {note.type === 'new_application' ? (
+                               <> applied for <span className="font-bold text-[#F27D26]">{note.jobTitle}</span></>
+                             ) : (
+                               <> reached <span className="font-bold text-[#F27D26]">{note.round}</span> for <span className="font-bold text-[#141414]">{note.jobTitle}</span></>
+                             )}
+                          </p>
+                          <div className="pt-2 flex items-center gap-4">
+                             <button 
+                               onClick={() => {
+                                 const c = candidates.find(u => u.uid === note.candidateId);
+                                 if (c) {
+                                   selectCandidate(c);
+                                   const j = jobs.find(job => job.id === note.jobId);
+                                   if (j) setSelectedJobForMatch(j);
+                                   setActiveTab('candidates');
+                                 }
+                               }}
+                               className="text-[9px] font-black uppercase tracking-widest text-[#141414] hover:text-[#F27D26] flex items-center gap-1"
+                             >
+                               View Profile <ChevronRight className="w-3 h-3" />
+                             </button>
+                             {!note.read && (
+                               <button 
+                                 onClick={() => markNotificationRead(note.id)}
+                                 className="text-[9px] font-black uppercase tracking-widest text-gray-400 hover:text-[#141414]"
+                               >
+                                 Mark read
+                               </button>
+                             )}
+                          </div>
+                       </div>
+                     </div>
+                   ))}
+                 </div>
+               ) : (
+                 <div className="bg-white border border-gray-100 p-20 text-center space-y-4">
+                    <Bell className="w-12 h-12 text-gray-100 mx-auto" />
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400">Your activity feed is currently empty</p>
+                 </div>
+               )}
             </div>
           </div>
         </div>

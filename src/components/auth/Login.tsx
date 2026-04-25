@@ -2,18 +2,32 @@ import React from 'react';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
 import { motion } from 'motion/react';
-import { ShieldCheck, Zap, Users, BrainCircuit } from 'lucide-react';
+import { ShieldCheck, Zap, Users, BrainCircuit, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function Login() {
+  const [loading, setLoading] = React.useState(false);
+
   const handleGoogleLogin = async () => {
+    if (loading) return;
+    setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       toast.success('Successfully logged in!');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      toast.error('Failed to log in with Google.');
+      if (error.code === 'auth/popup-closed-by-user') {
+        // User closed the window, ignore
+        return;
+      }
+      if (error.code === 'auth/unauthorized-domain') {
+        toast.error('Domain not authorized in Firebase. Please add your Vercel URL to "Authorized Domains" in the Firebase Console.');
+      } else {
+        toast.error(`Login failed: ${error.message || 'Failed to log in with Google'}`);
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -28,7 +42,7 @@ export default function Login() {
       <header className="p-8 flex justify-between items-center z-10">
         <div className="flex items-center gap-2">
           <BrainCircuit className="w-8 h-8 text-[#F27D26]" />
-          <span className="text-xl font-bold tracking-tighter uppercase">ProofLayer</span>
+          <span className="text-xl font-bold tracking-tighter uppercase">AXIOME</span>
         </div>
       </header>
 
@@ -39,8 +53,7 @@ export default function Login() {
             animate={{ y: 0, opacity: 1 }}
             className="text-[12vw] lg:text-[8rem] font-black leading-[0.8] uppercase tracking-tighter mb-8"
           >
-            Proof <br /> 
-            <span className="text-[#F27D26]">Layer</span>
+            AXI<span className="text-[#F27D26]">OME</span>
           </motion.h1>
           
           <motion.p 
@@ -61,10 +74,14 @@ export default function Login() {
           >
             <button 
               onClick={handleGoogleLogin}
-              className="px-8 py-4 bg-white text-black font-bold uppercase tracking-widest hover:bg-[#F27D26] hover:text-white transition-all rounded-none flex items-center justify-center gap-3 group"
+              disabled={loading}
+              className="px-8 py-4 bg-white text-black font-bold uppercase tracking-widest hover:bg-[#F27D26] hover:text-white transition-all rounded-none flex items-center justify-center gap-3 group disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Get Started with Google
-              <Zap className="w-5 h-5 group-hover:fill-current" />
+              {loading ? (
+                <>Logging in...<Loader2 className="w-5 h-5 animate-spin" /></>
+              ) : (
+                <>Get Started with Google <Zap className="w-5 h-5 group-hover:fill-current" /></>
+              )}
             </button>
           </motion.div>
         </div>
@@ -92,7 +109,7 @@ export default function Login() {
       </main>
 
       <footer className="p-8 text-xs text-gray-500 uppercase tracking-[0.2em] flex flex-col sm:flex-row justify-between gap-4 z-10">
-        <div>© 2026 PROOFLAYER. ALL RIGHTS RESERVED.</div>
+        <div>© 2026 AXIOME. ALL RIGHTS RESERVED.</div>
         <div className="flex gap-8">
           <a href="#" className="hover:text-white">Privacy</a>
           <a href="#" className="hover:text-white">Terms</a>

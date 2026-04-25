@@ -54,8 +54,38 @@
         "userId": { "type": "string" },
         "status": { "type": "string", "enum": ["applied", "round1", "round2", "round3", "offered", "rejected"] },
         "scores": { "type": "object", "description": "Scores from each round" },
+        "shortlisted": { "type": "boolean", "default": false },
         "updatedAt": { "type": "string", "format": "date-time" }
       }
+    },
+    "Notification": {
+      "title": "Recruiter Notification",
+      "description": "Alerts for recruiters about candidate activity",
+      "type": "object",
+      "properties": {
+        "recruiterId": { "type": "string", "description": "UID of the recruiter, or 'all' for general notifications" },
+        "type": { "type": "string", "enum": ["new_application", "candidate_progress"] },
+        "candidateId": { "type": "string" },
+        "candidateName": { "type": "string" },
+        "jobId": { "type": "string" },
+        "jobTitle": { "type": "string" },
+        "round": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Endorsement": {
+      "title": "Skill Endorsement",
+      "description": "Peer-to-peer skill recognition",
+      "type": "object",
+      "properties": {
+        "endorserId": { "type": "string" },
+        "endorserName": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "skillId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["endorserId", "recipientId", "skillId"]
     }
   },
   "firestore": {
@@ -74,6 +104,14 @@
     "applications/{applicationId}": {
       "schema": "Application",
       "description": "Job applications"
+    },
+    "notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Recruiter alerts"
+    },
+    "endorsements/{endorsementId}": {
+      "schema": "Endorsement",
+      "description": "Skill endorsements"
     }
   }
 }

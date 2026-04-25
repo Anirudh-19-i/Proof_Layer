@@ -3,10 +3,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { HelpCircle, Send, BrainCircuit, ChevronLeft, Loader2, ListPlus, CheckCircle } from 'lucide-react';
 import { generateInquiryTask, evaluateSkill } from '../../lib/gemini';
 import { db } from '../../lib/firebase';
-import { collection, addDoc, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, updateDoc, doc, getDoc } from 'firebase/firestore';
 import { useAuth } from '../auth/AuthProvider';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
+import { notificationService } from '../../services/notificationService';
+import SkillRadarChart from '../ui/SkillRadarChart';
 
 interface Round3Props {
   jobId: string;
@@ -14,7 +16,7 @@ interface Round3Props {
 }
 
 export default function Round3({ jobId, onComplete }: Round3Props) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [task, setTask] = useState<any>(null);
   const [questions, setQuestions] = useState<string[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState('');
@@ -74,10 +76,25 @@ export default function Round3({ jobId, onComplete }: Round3Props) {
         const appQuery = query(collection(db, 'applications'), where('userId', '==', user.uid), where('jobId', '==', jobId));
         const appSnap = await getDocs(appQuery);
         if (!appSnap.empty) {
-          await updateDoc(doc(db, 'applications', appSnap.docs[0].id), {
+          const appDoc = appSnap.docs[0];
+          await updateDoc(doc(db, 'applications', appDoc.id), {
             status: 'offered',
             updatedAt: new Date().toISOString(),
             [`scores.${3}`]: evaluation.score
+          });
+
+          // Trigger notification
+          const jobSnap = await getDoc(doc(db, 'jobs', jobId));
+          const jobData = jobSnap.data();
+          
+          await notificationService.notifyRecruiter({
+            recruiterId: 'all',
+            type: 'candidate_progress',
+            candidateId: user!.uid,
+            candidateName: profile?.displayName || 'Unknown Candidate',
+            jobId: jobId,
+            jobTitle: jobData?.title || 'Unknown Job',
+            round: 'Offered'
           });
         }
       }
@@ -105,6 +122,26 @@ export default function Round3({ jobId, onComplete }: Round3Props) {
               <p className="text-sm text-gray-500 italic">How you bridge gaps in information</p>
             </div>
             <div className="text-6xl font-black text-[#F27D26]">{result.score}</div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-12 mb-12 items-center">
+            <div className="bg-gray-50 p-6 shadow-inner border border-gray-100 flex items-center justify-center">
+               <SkillRadarChart />
+            </div>
+            
+            <div className="space-y-6">
+              {Object.entries(result.metrics || {}).map(([key, val]: [string, any]) => (
+                <div key={key}>
+                  <div className="flex justify-between mb-1">
+                    <p className="text-[10px] font-bold uppercase text-gray-400">{key}</p>
+                    <p className="text-[10px] font-bold text-[#141414]">{val}%</p>
+                  </div>
+                  <div className="h-1 bg-gray-100">
+                    <div className="h-full bg-[#141414]" style={{ width: `${val}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="bg-gray-50 p-8 border-l-4 border-[#141414] mb-12">

@@ -27,31 +27,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setUser(user);
-      if (user) {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          setProfile(userDoc.data() as UserProfile);
+      try {
+        setUser(user);
+        if (user) {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (userDoc.exists()) {
+            setProfile(userDoc.data() as UserProfile);
+          } else {
+            // New user, default to candidate
+            const newProfile: UserProfile = {
+              uid: user.uid,
+              displayName: user.displayName || 'Anonymous',
+              email: user.email || '',
+              photoURL: user.photoURL || undefined,
+              role: Role.CANDIDATE,
+              skills: {},
+              consistencyScore: 0,
+              learningVelocity: 0,
+              createdAt: new Date().toISOString(),
+            };
+            await setDoc(doc(db, 'users', user.uid), newProfile);
+            setProfile(newProfile);
+          }
         } else {
-          // New user, default to candidate
-          const newProfile: UserProfile = {
-            uid: user.uid,
-            displayName: user.displayName || 'Anonymous',
-            email: user.email || '',
-            photoURL: user.photoURL || undefined,
-            role: Role.CANDIDATE,
-            skills: {},
-            consistencyScore: 0,
-            learningVelocity: 0,
-            createdAt: new Date().toISOString(),
-          };
-          await setDoc(doc(db, 'users', user.uid), newProfile);
-          setProfile(newProfile);
+          setProfile(null);
         }
-      } else {
-        setProfile(null);
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return unsubscribe;

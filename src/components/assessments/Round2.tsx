@@ -5,6 +5,7 @@ import { db } from '../../lib/firebase';
 import { doc, onSnapshot, updateDoc, arrayUnion, setDoc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { useAuth } from '../auth/AuthProvider';
 import toast from 'react-hot-toast';
+import { notificationService } from '../../services/notificationService';
 
 interface Round2Props {
   jobId: string;
@@ -81,9 +82,24 @@ export default function Round2({ jobId, onComplete }: Round2Props) {
       const appQuery = query(collection(db, 'applications'), where('userId', '==', user.uid), where('jobId', '==', jobId));
       const appSnap = await getDocs(appQuery);
       if (!appSnap.empty) {
-        await updateDoc(doc(db, 'applications', appSnap.docs[0].id), {
+        const appDoc = appSnap.docs[0];
+        await updateDoc(doc(db, 'applications', appDoc.id), {
           status: 'round3',
           updatedAt: new Date().toISOString()
+        });
+
+        // Trigger notification
+        const jobSnap = await getDoc(doc(db, 'jobs', jobId));
+        const jobData = jobSnap.data();
+        
+        await notificationService.notifyRecruiter({
+          recruiterId: 'all',
+          type: 'candidate_progress',
+          candidateId: user!.uid,
+          candidateName: profile!.displayName,
+          jobId: jobId,
+          jobTitle: jobData?.title || 'Unknown Job',
+          round: 'Round 3'
         });
       }
       toast.success("Round 2 Completed! Moving to Round 3.");

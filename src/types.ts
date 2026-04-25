@@ -55,5 +55,28 @@ export interface Application {
   userId: string;
   status: 'applied' | 'round1' | 'round2' | 'round3' | 'offered' | 'rejected';
   scores: Record<number, number>;
+  shortlisted?: boolean;
   updatedAt: string;
+}
+
+export interface Notification {
+  id: string;
+  recruiterId: string;
+  type: 'new_application' | 'candidate_progress';
+  candidateId: string;
+  candidateName: string;
+  jobId: string;
+  jobTitle: string;
+  round?: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface Endorsement {
+  id: string;
+  endorserId: string;
+  endorserName: string;
+  recipientId: string;
+  skillId: string;
+  createdAt: string;
 }
